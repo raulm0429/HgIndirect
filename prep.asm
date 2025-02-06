@@ -21,7 +21,8 @@
 	sysNtOpenProcess PROC
 		mov r10, rcx
 		mov eax, wSsn
-		syscall
+
+		jmp qword ptr [qSyscallRet]
 		ret
 	sysNtOpenProcess ENDP
 
@@ -29,7 +30,7 @@
 		mov r10, rcx
 		mov eax, wSsn
 
-		syscall
+		jmp qword ptr [qSyscallRet]
 		ret
 	sysNtAllocateVirtualMem ENDP
 
@@ -37,7 +38,7 @@
 		mov r10, rcx
 		mov eax, wSsn
 
-		syscall
+		jmp qword ptr [qSyscallRet]
 		ret
 	sysNtWriteVirtualMem ENDP
 
@@ -45,7 +46,7 @@
 		mov r10, rcx
 		mov eax, wSsn
 
-		syscall
+		jmp qword ptr [qSyscallRet]
 		ret
 	sysNtProtectVirtualMem ENDP
 
@@ -53,7 +54,7 @@
 		mov r10, rcx
 		mov eax, wSsn
 
-		syscall
+		jmp qword ptr [qSyscallRet]
 		ret
 	sysNtCreateThreadEx ENDP
 
@@ -61,7 +62,7 @@
 		mov r10, rcx
 		mov eax, wSsn
 
-		syscall
+		jmp qword ptr [qSyscallRet]
 		ret
 	sysNtWaitForSingleObject ENDP
 end
